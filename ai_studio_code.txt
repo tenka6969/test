@@ -1,93 +1,702 @@
-local P,L,RS = game:GetService("Players").LocalPlayer,game:GetService("Lighting"),game:GetService("RunService")
-local C1,C2 = Color3.fromRGB(0,220,255),Color3.fromRGB(50,255,100)
-local orig = {L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows}
-local state,wps,folder,proxy,tAtt,tBeam,beacon,dLbl,hb,nv = "IDLE",{}
+-- ============================================================================
+-- ✨ FAIRYTALE MAZE GUIDE (Butter UI + Soft Night Vision + Sound + Smart Trail)
+-- ============================================================================
+local Players = game:GetService("Players")
+local Lighting = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
 
-local sg = Instance.new("ScreenGui",P:WaitForChild("PlayerGui")) sg.ResetOnSpawn = false
-local function mkBtn(txt,pos,col)
-	local b = Instance.new("TextButton",sg)
-	b.Size,b.Position,b.BackgroundColor3,b.TextColor3,b.Text = UDim2.new(0,160,0,36),pos,col,Color3.new(1,1,1),txt
-	return b
-end
-local bStart = mkBtn("START GUIDE",UDim2.new(0,20,0.5,-40),Color3.fromRGB(0,150,255))
-local bStop = mkBtn("STOP / RETURN",UDim2.new(0,20,0.5,5),Color3.fromRGB(80,80,90))
+local player = Players.LocalPlayer
 
-local function mkBeam(a0,a1,p)
-	local b = Instance.new("Beam",p)
-	b.Attachment0,b.Attachment1,b.Color,b.LightEmission,b.Width0,b.Width1,b.FaceCamera = a0,a1,ColorSequence.new(C1),1,0.6,0.6,true
-	return b
+-- Clean up previous script run if re-executed
+if _G.FairytaleMazeCleanup then
+	pcall(_G.FairytaleMazeCleanup)
 end
 
-local function addWP(pos)
-	local p = Instance.new("Part",folder)
-	p.Shape,p.Size,p.Position,p.Anchored,p.CanCollide,p.CanQuery,p.CanTouch,p.Material,p.Color = Enum.PartType.Ball,Vector3.new(0.8,0.8,0.8),pos,true,false,false,false,Enum.Material.Neon,C1
-	local a = Instance.new("Attachment",p)
-	local bm = #wps>0 and mkBeam(wps[#wps].a,a,p) or nil
-	table.insert(wps,{pos=pos,p=p,a=a,b=bm})
-	if tBeam then tBeam.Attachment0 = a end
+-- ==========================================
+-- 🎨 FAIRYTALE THEME & CONFIGURATION
+-- ==========================================
+local STEP_DISTANCE = 6
+local BACKTRACK_DISTANCE = 4.5
+
+-- Colors (Butter Gold, Enchanted Aqua, & Emerald Return)
+local COLOR_BG_TOP = Color3.fromRGB(36, 28, 52)
+local COLOR_BG_BOTTOM = Color3.fromRGB(22, 18, 32)
+local COLOR_BUTTER_GOLD = Color3.fromRGB(255, 225, 145)
+local COLOR_WARM_CREAM = Color3.fromRGB(255, 246, 225)
+local COLOR_EXPLORE = Color3.fromRGB(115, 235, 255) -- Soft Fairy Aqua
+local COLOR_RETURN = Color3.fromRGB(255, 215, 100)  -- Warm Butter Gold for returning home!
+
+-- ==========================================
+-- 🔊 SOUND EFFECTS SYSTEM
+-- ==========================================
+local soundFolder = Instance.new("Folder")
+soundFolder.Name = "FairyMazeSounds"
+soundFolder.Parent = SoundService
+
+local function playSound(id, volume, pitch)
+	local s = Instance.new("Sound")
+	s.SoundId = "rbxassetid://" .. tostring(id)
+	s.Volume = volume or 0.5
+	s.PlaybackSpeed = pitch or 1
+	s.Parent = soundFolder
+	s:Play()
+	s.Ended:Connect(function()
+		s:Destroy()
+	end)
 end
 
-local function trimWP(idx)
-	for i=#wps,idx,-1 do wps[i].p:Destroy() table.remove(wps,i) end
-	if #wps>0 and tBeam then tBeam.Attachment0 = wps[#wps].a end
+local SFX = {
+	Hover = function() playSound(6895079853, 0.25, 1.2) end,
+	Click = function() playSound(6895079853, 0.45, 0.95) end,
+	StartMagic = function() playSound(9119713951, 0.6, 1.05) end,
+	ReturnMode = function() playSound(9119713951, 0.6, 0.85) end,
+	NodePop = function() playSound(6895079853, 0.2, 1.35) end,
+	StopClean = function() playSound(6895079853, 0.35, 0.75) end
+}
+
+-- ==========================================
+-- 📊 STATE VARIABLES
+-- ==========================================
+local currentState = "IDLE" -- "IDLE", "EXPLORING", "RETURNING"
+local visionMode = "SOFT"   -- "SOFT" (Eye-friendly) or "BRIGHT"
+local waypoints = {}
+local trailFolder = nil
+local wispPart = nil
+local wispAttachment = nil
+local wispBeam = nil
+local wispLight = nil
+local startBeacon = nil
+local distanceLabel = nil
+local heartbeatConnection = nil
+local nvEffect = nil
+local lightingTween = nil
+local nvTween = nil
+
+-- Save original Lighting only once
+if not _G.OriginalMazeLighting then
+	_G.OriginalMazeLighting = {
+		Brightness = Lighting.Brightness,
+		Ambient = Lighting.Ambient,
+		OutdoorAmbient = Lighting.OutdoorAmbient,
+		FogEnd = Lighting.FogEnd,
+		GlobalShadows = Lighting.GlobalShadows
+	}
+end
+local savedLighting = _G.OriginalMazeLighting
+
+-- ==========================================
+-- 🦋 1. BUILD "BUTTER FAIRYTALE" UI
+-- ==========================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FairytaleMazeGuideUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainCard"
+mainFrame.Size = UDim2.new(0, 250, 0, 215)
+mainFrame.Position = UDim2.new(0, 24, 0.5, -107)
+mainFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+mainFrame.Parent = screenGui
+
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 16)
+
+local bgGrad = Instance.new("UIGradient", mainFrame)
+bgGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, COLOR_BG_TOP),
+	ColorSequenceKeypoint.new(1, COLOR_BG_BOTTOM)
+})
+bgGrad.Rotation = 45
+
+local borderStroke = Instance.new("UIStroke", mainFrame)
+borderStroke.Thickness = 2
+borderStroke.Color = COLOR_BUTTER_GOLD
+borderStroke.Transparency = 0.15
+
+local strokeGrad = Instance.new("UIGradient", borderStroke)
+strokeGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, COLOR_BUTTER_GOLD),
+	ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 250, 220)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(200, 155, 80))
+})
+strokeGrad.Rotation = 35
+
+-- Top Bar (Draggable Header)
+local topBar = Instance.new("Frame")
+topBar.Size = UDim2.new(1, 0, 0, 38)
+topBar.BackgroundTransparency = 1
+topBar.Parent = mainFrame
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -50, 1, 0)
+titleLabel.Position = UDim2.new(0, 16, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 15
+titleLabel.TextColor3 = COLOR_BUTTER_GOLD
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Text = "✨ Fairy Maze Guide"
+titleLabel.Parent = topBar
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 26, 0, 26)
+minBtn.Position = UDim2.new(1, -34, 0, 6)
+minBtn.BackgroundColor3 = Color3.fromRGB(55, 45, 78)
+minBtn.TextColor3 = COLOR_WARM_CREAM
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 14
+minBtn.Text = "—"
+minBtn.AutoButtonColor = false
+minBtn.Parent = topBar
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
+
+-- Content Container
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, -24, 1, -46)
+content.Position = UDim2.new(0, 12, 0, 40)
+content.BackgroundTransparency = 1
+content.Parent = mainFrame
+
+-- Status Pill
+local statusBox = Instance.new("Frame")
+statusBox.Size = UDim2.new(1, 0, 0, 30)
+statusBox.BackgroundColor3 = Color3.fromRGB(18, 14, 28)
+statusBox.BackgroundTransparency = 0.25
+statusBox.Parent = content
+Instance.new("UICorner", statusBox).CornerRadius = UDim.new(0, 8)
+
+local statusStroke = Instance.new("UIStroke", statusBox)
+statusStroke.Thickness = 1
+statusStroke.Color = Color3.fromRGB(90, 75, 120)
+statusStroke.Transparency = 0.5
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -16, 1, 0)
+statusLabel.Position = UDim2.new(0, 8, 0, 0)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Font = Enum.Font.GothamMedium
+statusLabel.TextSize = 12
+statusLabel.TextColor3 = COLOR_WARM_CREAM
+statusLabel.Text = "🌙 Status: Waiting at Entrance"
+statusLabel.Parent = statusBox
+
+-- Helper to create Buttery-Smooth Fairytale Buttons
+local function createFairyButton(text, yPos, height, baseColor, textColor)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, height)
+	btn.Position = UDim2.new(0, 0, 0, yPos)
+	btn.BackgroundColor3 = baseColor
+	btn.TextColor3 = textColor
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 13
+	btn.Text = text
+	btn.AutoButtonColor = false
+	btn.Parent = content
+
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+
+	local btnStroke = Instance.new("UIStroke", btn)
+	btnStroke.Thickness = 1.2
+	btnStroke.Color = Color3.fromRGB(255, 245, 210)
+	btnStroke.Transparency = 0.65
+
+	-- Buttery Hover & Click Animations
+	btn.MouseEnter:Connect(function()
+		SFX.Hover()
+		TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, 0, 0, height + 2)
+		}):Play()
+		TweenService:Create(btnStroke, TweenInfo.new(0.2), {Transparency = 0.15}):Play()
+	end)
+
+	btn.MouseLeave:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.new(1, 0, 0, height)
+		}):Play()
+		TweenService:Create(btnStroke, TweenInfo.new(0.2), {Transparency = 0.65}):Play()
+	end)
+
+	return btn
 end
 
-local function clean()
-	state = "IDLE"
-	if hb then hb:Disconnect() hb=nil end
-	if folder then folder:Destroy() folder=nil end
-	if nv then nv:Destroy() nv=nil end
-	wps = {}
-	L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows = table.unpack(orig)
-	P:SetAttribute("MazeGuideActive",false)
-	bStart.Text,bStop.Text = "START GUIDE","STOP / RETURN"
+local startBtn = createFairyButton("✨ Cast Guiding Thread", 38, 40, Color3.fromRGB(55, 115, 165), COLOR_WARM_CREAM)
+local stopBtn = createFairyButton("🦋 Follow Thread Home", 86, 40, Color3.fromRGB(52, 45, 68), Color3.fromRGB(190, 185, 205))
+local visionBtn = createFairyButton("🌙 Vision: Soft Fairy Glow", 134, 30, Color3.fromRGB(42, 35, 58), COLOR_BUTTER_GOLD)
+visionBtn.TextSize = 12
+
+-- Smooth Draggable Window Logic
+local dragging, dragInput, dragStart, startPos
+topBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = mainFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+topBar.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - dragStart
+		TweenService:Create(mainFrame, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		}):Play()
+	end
+end)
+
+-- Minimize Toggle
+local isMinimized = false
+minBtn.MouseButton1Click:Connect(function()
+	SFX.Click()
+	isMinimized = not isMinimized
+	minBtn.Text = isMinimized and "+" or "—"
+	content.Visible = not isMinimized
+	TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+		Size = isMinimized and UDim2.new(0, 250, 0, 38) or UDim2.new(0, 250, 0, 215)
+	}):Play()
+end)
+
+-- ==========================================
+-- 🌙 2. EYE-FRIENDLY NIGHT VISION (SMOOTH)
+-- ==========================================
+local function applyNightVision(enabled)
+	if lightingTween then lightingTween:Cancel() end
+	if nvTween then nvTween:Cancel() end
+
+	if enabled then
+		player:SetAttribute("MazeGuideActive", true)
+
+		if not nvEffect then
+			nvEffect = Instance.new("ColorCorrectionEffect")
+			nvEffect.Name = "MazeNightVision"
+			nvEffect.Brightness = 0
+			nvEffect.Contrast = 0
+			nvEffect.Saturation = 0
+			nvEffect.TintColor = Color3.fromRGB(255, 255, 255)
+			nvEffect.Parent = Lighting
+		end
+
+		-- Choose between Soft Cozy Glow (no eye strain!) or Clear Bright Glow
+		local targetBrightness = (visionMode == "SOFT") and 1.6 or 2.4
+		local targetAmbient = (visionMode == "SOFT") and Color3.fromRGB(115, 110, 138) or Color3.fromRGB(165, 165, 180)
+		local targetCCBright = (visionMode == "SOFT") and 0.05 or 0.12
+		local targetTint = (visionMode == "SOFT") and Color3.fromRGB(255, 246, 228) or Color3.fromRGB(245, 250, 255)
+
+		lightingTween = TweenService:Create(Lighting, TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+			Brightness = targetBrightness,
+			Ambient = targetAmbient,
+			OutdoorAmbient = targetAmbient,
+			FogEnd = 100000
+		})
+		lightingTween:Play()
+
+		nvTween = TweenService:Create(nvEffect, TweenInfo.new(1.0, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+			Brightness = targetCCBright,
+			Contrast = 0.08,
+			Saturation = 0.12,
+			TintColor = targetTint
+		})
+		nvTween:Play()
+
+		if wispLight then
+			TweenService:Create(wispLight, TweenInfo.new(0.8), {
+				Brightness = (visionMode == "SOFT") and 1.3 or 2.2,
+				Range = (visionMode == "SOFT") and 45 or 60
+			}):Play()
+		end
+	else
+		-- Smoothly fade back to the maze's original dark atmosphere
+		lightingTween = TweenService:Create(Lighting, TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+			Brightness = savedLighting.Brightness,
+			Ambient = savedLighting.Ambient,
+			OutdoorAmbient = savedLighting.OutdoorAmbient,
+			FogEnd = savedLighting.FogEnd
+		})
+		lightingTween:Play()
+		Lighting.GlobalShadows = savedLighting.GlobalShadows
+
+		if nvEffect then
+			local oldNv = nvEffect
+			nvEffect = nil
+			local fadeOut = TweenService:Create(oldNv, TweenInfo.new(0.8), {
+				Brightness = 0,
+				Contrast = 0,
+				Saturation = 0,
+				TintColor = Color3.fromRGB(255, 255, 255)
+			})
+			fadeOut:Play()
+			fadeOut.Completed:Connect(function()
+				oldNv:Destroy()
+			end)
+		end
+
+		player:SetAttribute("MazeGuideActive", false)
+	end
 end
 
-bStart.MouseButton1Click:Connect(function()
-	local rp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
-	if not rp then return end
-	clean() state = "EXPLORING"
-	P:SetAttribute("MazeGuideActive",true)
-	L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows = 3,Color3.fromRGB(180,180,180),Color3.fromRGB(180,180,180),1e5,false
-	nv = Instance.new("ColorCorrectionEffect",L) nv.Brightness = 0.15
-	folder = Instance.new("Folder",workspace) folder.Name = "PlayerMazeTrail"
+visionBtn.MouseButton1Click:Connect(function()
+	SFX.Click()
+	if visionMode == "SOFT" then
+		visionMode = "BRIGHT"
+		visionBtn.Text = "☀️ Vision: Clear Daylight"
+	else
+		visionMode = "SOFT"
+		visionBtn.Text = "🌙 Vision: Soft Fairy Glow"
+	end
+	if currentState ~= "IDLE" then
+		applyNightVision(true)
+	end
+end)
 
-	proxy = Instance.new("Part",folder)
-	proxy.Size,proxy.Transparency,proxy.Anchored,proxy.CanCollide,proxy.CanQuery,proxy.CanTouch = Vector3.new(0.1,0.1,0.1),1,true,false,false,false
-	tAtt = Instance.new("Attachment",proxy)
-	local pl = Instance.new("PointLight",proxy) pl.Range,pl.Brightness = 60,2
+-- ==========================================
+-- ✨ 3. FAIRY SPARKLES, BEAMS & WAYPOINTS
+-- ==========================================
+local function addFairySparkles(parent, color)
+	local pe = Instance.new("ParticleEmitter")
+	pe.Color = ColorSequence.new(color, COLOR_BUTTER_GOLD)
+	pe.LightEmission = 1
+	pe.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(0.3, 0.25),
+		NumberSequenceKeypoint.new(1, 0)
+	})
+	pe.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.2, 0.1),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	pe.Lifetime = NumberRange.new(1.2, 2.2)
+	pe.Rate = 12
+	pe.Speed = NumberRange.new(0.8, 2.0)
+	pe.SpreadAngle = Vector2.new(180, 180)
+	pe.Parent = parent
+	return pe
+end
 
-	beacon = Instance.new("Part",folder)
-	beacon.Size,beacon.Position,beacon.Anchored,beacon.CanCollide,beacon.CanQuery,beacon.CanTouch,beacon.Material,beacon.Color = Vector3.new(2,8,2),rp.Position,true,false,false,false,Enum.Material.Neon,C1
-	local hl = Instance.new("Highlight",beacon) hl.FillColor = C1
-	local bg = Instance.new("BillboardGui",beacon) bg.Size,bg.StudsOffset,bg.AlwaysOnTop = UDim2.new(0,120,0,40),Vector3.new(0,5,0),true
-	dLbl = Instance.new("TextLabel",bg) dLbl.Size,dLbl.BackgroundTransparency,dLbl.TextColor3,dLbl.Text = UDim2.new(1,0,1,0),1,Color3.new(1,1,1),"START"
+local function createBeam(att0, att1, color, parent)
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = att0
+	beam.Attachment1 = att1
+	beam.Color = ColorSequence.new(color, COLOR_BUTTER_GOLD)
+	beam.LightEmission = 1
+	beam.LightInfluence = 0
+	beam.Width0 = 0.45
+	beam.Width1 = 0.45
+	beam.FaceCamera = true
+	beam.Transparency = NumberSequence.new(0.15)
+	beam.Parent = parent
+	return beam
+end
 
-	addWP(rp.Position)
-	tBeam = mkBeam(wps[1].a,tAtt,folder)
-	bStop.Text = "RETURN MODE"
+local function addWaypoint(position)
+	local node = Instance.new("Part")
+	node.Name = "FairyNode_" .. (#waypoints + 1)
+	node.Shape = Enum.PartType.Ball
+	node.Size = Vector3.new(0.65, 0.65, 0.65)
+	node.Position = position
+	node.Anchored = true
+	node.CanCollide = false
+	node.CanQuery = false
+	node.CanTouch = false
+	node.Material = Enum.Material.Neon
+	node.Color = COLOR_EXPLORE
+	node.Transparency = 0.15
+	node.Parent = trailFolder
 
-	hb = RS.Heartbeat:Connect(function()
-		if not rp or not rp.Parent then clean() return end
-		local pos = rp.Position
-		proxy.Position = pos
-		dLbl.Text = "START: "..math.floor((pos-wps[1].pos).Magnitude).." studs"
-		if state == "EXPLORING" then
-			for i=1,#wps-1 do if (pos-wps[i].pos).Magnitude<=4.5 then trimWP(i+1) break end end
-			if (pos-wps[#wps].pos).Magnitude>=6 then addWP(pos) end
-		elseif state == "RETURNING" then
-			if (pos-wps[#wps].pos).Magnitude<=6 then
-				if #wps>1 then trimWP(#wps) else clean() end
+	local att = Instance.new("Attachment", node)
+
+	local beam = nil
+	if #waypoints > 0 then
+		local prevWp = waypoints[#waypoints]
+		beam = createBeam(prevWp.attachment, att, COLOR_EXPLORE, node)
+	end
+
+	table.insert(waypoints, {
+		position = position,
+		part = node,
+		attachment = att,
+		beam = beam
+	})
+
+	if wispBeam then
+		wispBeam.Attachment0 = att
+	end
+end
+
+local function removeWaypointsFrom(index, playPop)
+	for i = #waypoints, index, -1 do
+		if waypoints[i].part then
+			waypoints[i].part:Destroy()
+		end
+		table.remove(waypoints, i)
+	end
+	if playPop then
+		SFX.NodePop()
+	end
+	if #waypoints > 0 and wispBeam then
+		wispBeam.Attachment0 = waypoints[#waypoints].attachment
+	end
+end
+
+local function cleanupAll()
+	currentState = "IDLE"
+	if heartbeatConnection then
+		heartbeatConnection:Disconnect()
+		heartbeatConnection = nil
+	end
+	if trailFolder then
+		trailFolder:Destroy()
+		trailFolder = nil
+	end
+	waypoints = {}
+	wispPart = nil
+	wispAttachment = nil
+	wispBeam = nil
+	wispLight = nil
+	startBeacon = nil
+	distanceLabel = nil
+
+	applyNightVision(false)
+
+	statusLabel.Text = "🌙 Status: Waiting at Entrance"
+	statusLabel.TextColor3 = COLOR_WARM_CREAM
+
+	TweenService:Create(startBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(55, 115, 165)}):Play()
+	startBtn.Text = "✨ Cast Guiding Thread"
+
+	TweenService:Create(stopBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(52, 45, 68)}):Play()
+	stopBtn.TextColor3 = Color3.fromRGB(190, 185, 205)
+	stopBtn.Text = "🦋 Follow Thread Home"
+end
+
+-- ==========================================
+-- 🧚 4. START & RETURN LOGIC
+-- ==========================================
+local function startGuide()
+	local character = player.Character
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	cleanupAll()
+	SFX.StartMagic()
+	currentState = "EXPLORING"
+
+	trailFolder = Instance.new("Folder")
+	trailFolder.Name = "PlayerMazeTrail"
+	trailFolder.Parent = workspace
+
+	-- Create Floating Fairy Wisp Companion (AC-Safe Proxy Part)
+	wispPart = Instance.new("Part")
+	wispPart.Name = "FairyWisp"
+	wispPart.Shape = Enum.PartType.Ball
+	wispPart.Size = Vector3.new(0.9, 0.9, 0.9)
+	wispPart.Position = rootPart.Position + Vector3.new(2, 2, 0)
+	wispPart.Anchored = true
+	wispPart.CanCollide = false
+	wispPart.CanQuery = false
+	wispPart.CanTouch = false
+	wispPart.Material = Enum.Material.Neon
+	wispPart.Color = COLOR_BUTTER_GOLD
+	wispPart.Parent = trailFolder
+
+	wispAttachment = Instance.new("Attachment", wispPart)
+	addFairySparkles(wispPart, COLOR_BUTTER_GOLD)
+
+	wispLight = Instance.new("PointLight")
+	wispLight.Color = Color3.fromRGB(255, 238, 200)
+	wispLight.Range = 45
+	wispLight.Brightness = 1.3
+	wispLight.Shadows = false
+	wispLight.Parent = wispPart
+
+	applyNightVision(true)
+
+	-- Create Enchanted Start Beacon
+	startBeacon = Instance.new("Part")
+	startBeacon.Name = "EnchantedStartBeacon"
+	startBeacon.Size = Vector3.new(2.2, 6.5, 2.2)
+	startBeacon.Position = rootPart.Position
+	startBeacon.Anchored = true
+	startBeacon.CanCollide = false
+	startBeacon.CanQuery = false
+	startBeacon.CanTouch = false
+	startBeacon.Material = Enum.Material.Neon
+	startBeacon.Color = COLOR_EXPLORE
+	startBeacon.Transparency = 0.25
+	startBeacon.Parent = trailFolder
+
+	local beaconMesh = Instance.new("SpecialMesh", startBeacon)
+	beaconMesh.MeshType = Enum.MeshType.FileMesh
+	beaconMesh.MeshId = "rbxassetid://9756362" -- Diamond/Crystal shape!
+	beaconMesh.Scale = Vector3.new(2.2, 5.5, 2.2)
+
+	addFairySparkles(startBeacon, COLOR_EXPLORE)
+
+	local highlight = Instance.new("Highlight")
+	highlight.FillColor = COLOR_EXPLORE
+	highlight.OutlineColor = COLOR_BUTTER_GOLD
+	highlight.FillTransparency = 0.35
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Parent = startBeacon
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Size = UDim2.new(0, 170, 0, 50)
+	billboard.StudsOffset = Vector3.new(0, 4.5, 0)
+	billboard.AlwaysOnTop = true
+	billboard.Parent = startBeacon
+
+	distanceLabel = Instance.new("TextLabel")
+	distanceLabel.Size = UDim2.new(1, 0, 1, 0)
+	distanceLabel.BackgroundTransparency = 1
+	distanceLabel.TextColor3 = COLOR_BUTTER_GOLD
+	distanceLabel.TextStrokeColor3 = Color3.fromRGB(25, 18, 40)
+	distanceLabel.TextStrokeTransparency = 0.1
+	distanceLabel.Font = Enum.Font.GothamBold
+	distanceLabel.TextSize = 13
+	distanceLabel.Text = "✨ SANCTUARY START ✨\n0 studs"
+	distanceLabel.Parent = billboard
+
+	addWaypoint(rootPart.Position)
+	wispBeam = createBeam(waypoints[1].attachment, wispAttachment, COLOR_EXPLORE, trailFolder)
+
+	-- Update UI Appearance
+	TweenService:Create(startBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(45, 85, 125)}):Play()
+	startBtn.Text = "🔄 Reset Start Point Here"
+
+	TweenService:Create(stopBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(195, 145, 55)}):Play()
+	stopBtn.TextColor3 = Color3.fromRGB(25, 20, 35)
+	stopBtn.Text = "🦋 Follow Thread Home"
+
+	local startTime = os.clock()
+
+	heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
+		if not rootPart or not rootPart.Parent then
+			cleanupAll()
+			return
+		end
+
+		local t = os.clock() - startTime
+		local currentPos = rootPart.Position
+
+		-- Smoothly float the Fairy Wisp beside the player
+		if wispPart then
+			local hoverOffset = Vector3.new(math.cos(t * 2.2) * 1.8, 1.8 + math.sin(t * 3.5) * 0.4, math.sin(t * 2.2) * 1.8)
+			wispPart.Position = wispPart.Position:Lerp(currentPos + hoverOffset, math.clamp(dt * 10, 0, 1))
+		end
+
+		-- Gently spin & bob the Start Crystal Beacon
+		if startBeacon and waypoints[1] then
+			startBeacon.CFrame = CFrame.new(waypoints[1].position + Vector3.new(0, math.sin(t * 2) * 0.6, 0)) * CFrame.Angles(0, t * 1.2, 0)
+		end
+
+		local distFromStart = waypoints[1] and math.floor((currentPos - waypoints[1].position).Magnitude) or 0
+		if distanceLabel then
+			distanceLabel.Text = "✨ SANCTUARY START ✨\n" .. distFromStart .. " studs away"
+		end
+
+		if currentState == "EXPLORING" then
+			statusLabel.Text = string.format("🦋 Exploring: %d nodes (%dm)", #waypoints, distFromStart)
+			statusLabel.TextColor3 = COLOR_EXPLORE
+
+			-- Smart Dead-End Eraser
+			if #waypoints > 1 then
+				for i = 1, #waypoints - 1 do
+					if (currentPos - waypoints[i].position).Magnitude <= BACKTRACK_DISTANCE then
+						removeWaypointsFrom(i + 1, false)
+						break
+					end
+				end
+			end
+
+			-- Drop new fairy node
+			local lastWp = waypoints[#waypoints]
+			if lastWp and (currentPos - lastWp.position).Magnitude >= STEP_DISTANCE then
+				addWaypoint(currentPos)
+			end
+
+		elseif currentState == "RETURNING" then
+			statusLabel.Text = string.format("🌟 Guiding Home: %d studs left", distFromStart)
+			statusLabel.TextColor3 = COLOR_BUTTER_GOLD
+
+			if #waypoints > 1 then
+				local lastWp = waypoints[#waypoints]
+				if (currentPos - lastWp.position).Magnitude <= STEP_DISTANCE then
+					removeWaypointsFrom(#waypoints, true)
+				end
+			elseif #waypoints == 1 then
+				if (currentPos - waypoints[1].position).Magnitude <= STEP_DISTANCE then
+					SFX.StartMagic()
+					cleanupAll()
+				end
 			end
 		end
 	end)
+end
+
+local function stopOrReturn()
+	if currentState == "EXPLORING" then
+		SFX.ReturnMode()
+		currentState = "RETURNING"
+
+		-- Turn the entire thread into glowing Butter Gold to guide the player home
+		for _, wp in ipairs(waypoints) do
+			if wp.part then wp.part.Color = COLOR_RETURN end
+			if wp.beam then
+				wp.beam.Color = ColorSequence.new(COLOR_RETURN, Color3.fromRGB(255, 250, 210))
+				wp.beam.Width0 = 0.85
+				wp.beam.Width1 = 0.85
+			end
+		end
+		if wispBeam then
+			wispBeam.Color = ColorSequence.new(COLOR_RETURN, Color3.fromRGB(255, 250, 210))
+			wispBeam.Width0 = 0.85
+			wispBeam.Width1 = 0.85
+		end
+		if startBeacon then
+			startBeacon.Color = COLOR_RETURN
+		end
+
+		TweenService:Create(stopBtn, TweenInfo.new(0.25), {BackgroundColor3 = Color3.fromRGB(185, 65, 85)}):Play()
+		stopBtn.TextColor3 = COLOR_WARM_CREAM
+		stopBtn.Text = "✖ End & Turn Off Glow"
+
+	elseif currentState == "RETURNING" then
+		SFX.StopClean()
+		cleanupAll()
+	else
+		SFX.Click()
+	end
+end
+
+-- ==========================================
+-- 🔗 5. CONNECTIONS & AUTO-CLEANUP
+-- ==========================================
+startBtn.MouseButton1Click:Connect(startGuide)
+stopBtn.MouseButton1Click:Connect(stopOrReturn)
+
+local charAddedConn = player.CharacterAdded:Connect(function()
+	cleanupAll()
 end)
 
-bStop.MouseButton1Click:Connect(function()
-	if state == "EXPLORING" then
-		state,bStop.Text,beacon.Color = "RETURNING","TURN OFF",C2
-		tBeam.Color = ColorSequence.new(C2)
-		for _,w in ipairs(wps) do w.p.Color = C2 if w.b then w.b.Color = ColorSequence.new(C2) end end
-	elseif state == "RETURNING" then clean() end
-end)
-P.CharacterAdded:Connect(clean)
+_G.FairytaleMazeCleanup = function()
+	cleanupAll()
+	if charAddedConn then charAddedConn:Disconnect() end
+	if screenGui then screenGui:Destroy() end
+	if soundFolder then soundFolder:Destroy() end
+end
