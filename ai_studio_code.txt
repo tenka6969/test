@@ -1,0 +1,93 @@
+local P,L,RS = game:GetService("Players").LocalPlayer,game:GetService("Lighting"),game:GetService("RunService")
+local C1,C2 = Color3.fromRGB(0,220,255),Color3.fromRGB(50,255,100)
+local orig = {L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows}
+local state,wps,folder,proxy,tAtt,tBeam,beacon,dLbl,hb,nv = "IDLE",{}
+
+local sg = Instance.new("ScreenGui",P:WaitForChild("PlayerGui")) sg.ResetOnSpawn = false
+local function mkBtn(txt,pos,col)
+	local b = Instance.new("TextButton",sg)
+	b.Size,b.Position,b.BackgroundColor3,b.TextColor3,b.Text = UDim2.new(0,160,0,36),pos,col,Color3.new(1,1,1),txt
+	return b
+end
+local bStart = mkBtn("START GUIDE",UDim2.new(0,20,0.5,-40),Color3.fromRGB(0,150,255))
+local bStop = mkBtn("STOP / RETURN",UDim2.new(0,20,0.5,5),Color3.fromRGB(80,80,90))
+
+local function mkBeam(a0,a1,p)
+	local b = Instance.new("Beam",p)
+	b.Attachment0,b.Attachment1,b.Color,b.LightEmission,b.Width0,b.Width1,b.FaceCamera = a0,a1,ColorSequence.new(C1),1,0.6,0.6,true
+	return b
+end
+
+local function addWP(pos)
+	local p = Instance.new("Part",folder)
+	p.Shape,p.Size,p.Position,p.Anchored,p.CanCollide,p.CanQuery,p.CanTouch,p.Material,p.Color = Enum.PartType.Ball,Vector3.new(0.8,0.8,0.8),pos,true,false,false,false,Enum.Material.Neon,C1
+	local a = Instance.new("Attachment",p)
+	local bm = #wps>0 and mkBeam(wps[#wps].a,a,p) or nil
+	table.insert(wps,{pos=pos,p=p,a=a,b=bm})
+	if tBeam then tBeam.Attachment0 = a end
+end
+
+local function trimWP(idx)
+	for i=#wps,idx,-1 do wps[i].p:Destroy() table.remove(wps,i) end
+	if #wps>0 and tBeam then tBeam.Attachment0 = wps[#wps].a end
+end
+
+local function clean()
+	state = "IDLE"
+	if hb then hb:Disconnect() hb=nil end
+	if folder then folder:Destroy() folder=nil end
+	if nv then nv:Destroy() nv=nil end
+	wps = {}
+	L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows = table.unpack(orig)
+	P:SetAttribute("MazeGuideActive",false)
+	bStart.Text,bStop.Text = "START GUIDE","STOP / RETURN"
+end
+
+bStart.MouseButton1Click:Connect(function()
+	local rp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+	if not rp then return end
+	clean() state = "EXPLORING"
+	P:SetAttribute("MazeGuideActive",true)
+	L.Brightness,L.Ambient,L.OutdoorAmbient,L.FogEnd,L.GlobalShadows = 3,Color3.fromRGB(180,180,180),Color3.fromRGB(180,180,180),1e5,false
+	nv = Instance.new("ColorCorrectionEffect",L) nv.Brightness = 0.15
+	folder = Instance.new("Folder",workspace) folder.Name = "PlayerMazeTrail"
+
+	proxy = Instance.new("Part",folder)
+	proxy.Size,proxy.Transparency,proxy.Anchored,proxy.CanCollide,proxy.CanQuery,proxy.CanTouch = Vector3.new(0.1,0.1,0.1),1,true,false,false,false
+	tAtt = Instance.new("Attachment",proxy)
+	local pl = Instance.new("PointLight",proxy) pl.Range,pl.Brightness = 60,2
+
+	beacon = Instance.new("Part",folder)
+	beacon.Size,beacon.Position,beacon.Anchored,beacon.CanCollide,beacon.CanQuery,beacon.CanTouch,beacon.Material,beacon.Color = Vector3.new(2,8,2),rp.Position,true,false,false,false,Enum.Material.Neon,C1
+	local hl = Instance.new("Highlight",beacon) hl.FillColor = C1
+	local bg = Instance.new("BillboardGui",beacon) bg.Size,bg.StudsOffset,bg.AlwaysOnTop = UDim2.new(0,120,0,40),Vector3.new(0,5,0),true
+	dLbl = Instance.new("TextLabel",bg) dLbl.Size,dLbl.BackgroundTransparency,dLbl.TextColor3,dLbl.Text = UDim2.new(1,0,1,0),1,Color3.new(1,1,1),"START"
+
+	addWP(rp.Position)
+	tBeam = mkBeam(wps[1].a,tAtt,folder)
+	bStop.Text = "RETURN MODE"
+
+	hb = RS.Heartbeat:Connect(function()
+		if not rp or not rp.Parent then clean() return end
+		local pos = rp.Position
+		proxy.Position = pos
+		dLbl.Text = "START: "..math.floor((pos-wps[1].pos).Magnitude).." studs"
+		if state == "EXPLORING" then
+			for i=1,#wps-1 do if (pos-wps[i].pos).Magnitude<=4.5 then trimWP(i+1) break end end
+			if (pos-wps[#wps].pos).Magnitude>=6 then addWP(pos) end
+		elseif state == "RETURNING" then
+			if (pos-wps[#wps].pos).Magnitude<=6 then
+				if #wps>1 then trimWP(#wps) else clean() end
+			end
+		end
+	end)
+end)
+
+bStop.MouseButton1Click:Connect(function()
+	if state == "EXPLORING" then
+		state,bStop.Text,beacon.Color = "RETURNING","TURN OFF",C2
+		tBeam.Color = ColorSequence.new(C2)
+		for _,w in ipairs(wps) do w.p.Color = C2 if w.b then w.b.Color = ColorSequence.new(C2) end end
+	elseif state == "RETURNING" then clean() end
+end)
+P.CharacterAdded:Connect(clean)
